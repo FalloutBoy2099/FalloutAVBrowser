@@ -1,0 +1,23 @@
+1 ICON "assets/icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "ProductName", "FalloutAVBrowser"
+      VALUE "FileDescription", "FalloutAVBrowser - audio and video player (ACM, MVE, DAT...)"
+      VALUE "CompanyName", "Kain"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "ProductVersion", "0.1.0"
+      VALUE "OriginalFilename", "fallout_av_browser.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 0x04B0
+  END
+END

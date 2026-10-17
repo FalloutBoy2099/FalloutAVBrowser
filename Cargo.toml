@@ -1,0 +1,46 @@
+[package]
+name = "fallout_av_browser"
+version = "0.1.0"
+edition = "2024"
+description = "Lecteur audio / vidéo pour Fallout 1/2 et Arcanum (ACM, MVE, WAV), avec navigation dans les archives .DAT"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu_no_default_features", "default_fonts", "persistence", "wayland", "x11"] }
+anyhow = "1"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+flate2 = "1"
+zip = { version = "9", default-features = false, features = ["deflate", "deflate64", "lzma"] }
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["deflate"] }
+rfd = "0.15"
+cpal = "0.15"
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
+sys-locale = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Registry", "Win32_Security", "Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "dx12", "vulkan"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "metal"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
