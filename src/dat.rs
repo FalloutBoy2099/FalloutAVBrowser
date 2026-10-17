@@ -28,8 +28,8 @@ pub struct DatEntry {
     pub path: String,
     pub flags: u32,
     pub offset: u64,
-    pub size: u32,
-    pub packed: u32,
+    pub size: u64,
+    pub packed: u64,
 }
 
 impl DatEntry {
@@ -65,12 +65,122 @@ fn norm(s: &str) -> String {
     s.replace('\\', "/").split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").map(|c| c.replace(':', "_")).collect::<Vec<_>>().join("/")
 }
 
-/// Taille maximale d'une entrée décompressée (protège d'une archive piégée).
-const MAX_ENTRY: u64 = 1 << 30;
+/// Taille absolue au-delà de laquelle une entrée est refusée, quelle que soit la mémoire disponible (valeur manifestement forgée).
+const MAX_ENTRY: u64 = 64 << 30;
 
-fn cache() -> &'static Mutex<HashMap<PathBuf, Arc<Dat>>> {
-    static C: OnceLock<Mutex<HashMap<PathBuf, Arc<Dat>>>> = OnceLock::new();
+/// Taille décompressée maximale d'un bloc 7z que l'on accepte de décoder pour lire un seul fichier : elle borne le temps de
+/// décompression (la mémoire, elle, est bornée par la taille de l'entrée demandée).
+const MAX_7Z_BLOCK: u64 = 16 << 30;
+
+/// Mémoire disponible pour le processus (octets), quand le système la fournit.
+fn available_memory() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY : la structure est initialisée avec sa taille, comme l'exige l'API.
+        unsafe {
+            let mut m: MEMORYSTATUSEX = std::mem::zeroed();
+            m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            if GlobalMemoryStatusEx(&mut m) != 0 {
+                return Some(m.ullAvailPageFile.min(m.ullAvailVirtual));
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let t = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = t.lines().find(|l| l.starts_with("MemAvailable:"))?.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb * 1024)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Refuse (au lieu de laisser le système abandonner le programme) une lecture qui ne tiendrait pas en mémoire. Le double de
+/// la taille est réclamé : le décodage fait ensuite des copies.
+fn check_size(bytes: u64) -> Result<()> {
+    if bytes > MAX_ENTRY {
+        bail!("entrée trop volumineuse ({} Mo)", bytes >> 20);
+    }
+    if bytes > 128 << 20
+        && let Some(avail) = available_memory()
+        && bytes.saturating_mul(2) > avail
+    {
+        bail!("mémoire insuffisante : {} Mo nécessaires, {} Mo disponibles", bytes >> 20, avail >> 20);
+    }
+    Ok(())
+}
+
+/// Vecteur de `n` octets à zéro, ou une erreur si la mémoire manque.
+fn alloc(n: usize) -> Result<Vec<u8>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| anyhow!("mémoire insuffisante ({} Mo)", n >> 20))?;
+    v.resize(n, 0);
+    Ok(v)
+}
+
+/// Lit `r` en entier ; refuse un flux plus long que `expected` (+ 1 Mo de tolérance) au lieu de le tronquer en silence.
+fn read_all(mut r: impl Read, expected: u64) -> Result<Vec<u8>> {
+    let limit = expected.saturating_add(1 << 20);
+    let mut out = Vec::new();
+    out.try_reserve(expected.min(64 << 20) as usize).map_err(|_| anyhow!("mémoire insuffisante"))?;
+    let mut chunk = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        if out.len() as u64 + n as u64 > limit {
+            bail!("données plus longues que la taille annoncée ({} Mo)", expected >> 20);
+        }
+        out.try_reserve(n).map_err(|_| anyhow!("mémoire insuffisante"))?;
+        out.extend_from_slice(&chunk[..n]);
+    }
+    Ok(out)
+}
+
+/// Ouvre un fichier en lecture sans empêcher les autres programmes de le renommer, le remplacer ou le supprimer (Windows verrouille
+/// sinon un fichier ouvert : une archive ZIP / 7z gardée ouverte par le programme ne pourrait plus être modifiée).
+fn open_shared(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.share_mode(0x1 | 0x2 | 0x4); // FILE_SHARE_READ | WRITE | DELETE
+    }
+    o.open(path)
+}
+
+/// Empreinte d'un fichier d'archive : si elle change, l'index en cache n'est plus valable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+fn stamp(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok();
+    Stamp { len: m.as_ref().map_or(0, |m| m.len()), modified: m.and_then(|m| m.modified().ok()) }
+}
+
+/// Une archive du cache : elle n'est analysée qu'une fois, par le premier thread qui la demande, sans bloquer les autres archives.
+struct Slot {
+    stamp: Stamp,
+    cell: Arc<OnceLock<std::result::Result<Arc<Dat>, String>>>,
+}
+
+fn cache() -> &'static Mutex<HashMap<PathBuf, Slot>> {
+    static C: OnceLock<Mutex<HashMap<PathBuf, Slot>>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Oublie l'index d'une archive (après « Actualiser » : elle a pu changer sur le disque) ; son fichier est alors refermé.
+pub fn forget(path: &Path) {
+    cache().lock().unwrap().remove(path);
 }
 
 /// Extension d'archive : `.dat`, `.zip`, `.7z`, ou `.patch0` à `.patch9` (correctifs d'Arcanum, même format que `.dat`).
@@ -168,14 +278,24 @@ pub fn walk(dir: &Path) -> Vec<(PathBuf, PathBuf)> {
 
 impl Dat {
     pub fn open(path: &Path) -> Result<Arc<Dat>> {
-        // Le verrou reste pris pendant l'analyse : plusieurs threads qui ouvrent la même archive en même temps ne la lisent qu'une fois.
-        let mut c = cache().lock().unwrap();
-        if let Some(d) = c.get(path) {
-            return Ok(d.clone());
+        let st = stamp(path);
+        // Le verrou global ne sert qu'à trouver (ou créer) la case de l'archive ; l'analyse se fait hors de lui. Plusieurs threads qui
+        // ouvrent la même archive en même temps ne la lisent qu'une fois, et une archive modifiée sur le disque est relue.
+        let cell = {
+            let mut c = cache().lock().unwrap();
+            match c.get(path) {
+                Some(slot) if slot.stamp == st => slot.cell.clone(),
+                _ => {
+                    let cell = Arc::new(OnceLock::new());
+                    c.insert(path.to_path_buf(), Slot { stamp: st, cell: cell.clone() });
+                    cell
+                }
+            }
+        };
+        match cell.get_or_init(|| Dat::parse(path).map(Arc::new).map_err(|e| e.to_string())) {
+            Ok(d) => Ok(d.clone()),
+            Err(e) => Err(anyhow!("{e}")),
         }
-        let dat = Arc::new(Dat::parse(path)?);
-        c.insert(path.to_path_buf(), dat.clone());
-        Ok(dat)
     }
 
     pub fn find(&self, inner: &str) -> Option<usize> {
@@ -215,7 +335,7 @@ impl Dat {
     }
 
     fn parse(path: &Path) -> Result<Dat> {
-        let mut f = std::fs::File::open(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+        let mut f = open_shared(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
         let len = f.metadata()?.len();
         if len < 16 {
             bail!("archive DAT trop courte");
@@ -279,33 +399,48 @@ impl Dat {
         if guard.is_none() {
             *guard = Some(match self.kind {
                 DatKind::Zip => {
-                    let f = std::fs::File::open(&self.path)?;
+                    let f = open_shared(&self.path)?;
                     Handle::Zip(zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| anyhow!("zip : {e}"))?)
                 }
-                _ => Handle::Seven(Box::new(sevenz_rust2::ArchiveReader::open(&self.path, sevenz_rust2::Password::empty()).map_err(|e| anyhow!("7z : {e}"))?)),
+                _ => Handle::Seven(Box::new(sevenz_rust2::ArchiveReader::new(open_shared(&self.path)?, sevenz_rust2::Password::empty()).map_err(|e| anyhow!("7z : {e}"))?)),
             });
         }
         match guard.as_mut().unwrap() {
             Handle::Zip(z) => {
                 let mut f = z.by_index(e.offset as usize).map_err(|e| anyhow!("zip : {e}"))?;
-                let mut out = Vec::with_capacity((e.size as usize).min(64 << 20));
-                (&mut f).take(MAX_ENTRY).read_to_end(&mut out).map_err(|e| anyhow!("zip : {e}"))?;
-                Ok(out)
+                let size = f.size();
+                check_size(size)?;
+                read_all(&mut f, size).map_err(|e| anyhow!("zip : {e}"))
             }
             Handle::Seven(r) => {
-                let name = r.archive().files.get(e.offset as usize).map(|f| f.name.clone()).ok_or_else(|| anyhow!("entrée 7z introuvable"))?;
+                // Les tailles annoncées par l'archive bornent la mémoire : on les vérifie avant de décompresser quoi que ce soit.
+                // (Dans une archive « solide », lire un fichier décompresse tout son bloc depuis le début.)
+                let (name, size, block) = {
+                    let a = r.archive();
+                    let f = a.files.get(e.offset as usize).ok_or_else(|| anyhow!("entrée 7z introuvable"))?;
+                    let block = a.stream_map.file_block_index.get(e.offset as usize).copied().flatten().and_then(|b| a.blocks.get(b)).map_or(0, |b| b.get_unpack_size());
+                    (f.name.clone(), f.size, block)
+                };
+                check_size(size)?;
+                if block > MAX_7Z_BLOCK {
+                    bail!("bloc 7z trop volumineux à décompresser ({} Mo)", block >> 20);
+                }
                 r.read_file(&name).map_err(|e| anyhow!("7z : {e}"))
             }
         }
     }
 
     pub fn read(&self, idx: usize) -> Result<Vec<u8>> {
+        if matches!(self.kind, DatKind::Zip | DatKind::SevenZ) {
+            return self.read_archive(idx);
+        }
         let e = &self.entries[idx];
-        let mut f = std::fs::File::open(&self.path)?;
+        let mut f = open_shared(&self.path)?;
         // Les tailles viennent de l'archive : on vérifie qu'elles tiennent dans le fichier avant d'allouer.
         let flen = f.metadata()?.len();
         let room = flen.checked_sub(e.offset).ok_or_else(|| anyhow!("entrée hors de l'archive"))?;
-        let fits = |n: u32| if n as u64 <= room { Ok(n as usize) } else { Err(anyhow!("entrée tronquée ou taille invalide")) };
+        let fits = |n: u64| if n <= room { Ok(n as usize) } else { Err(anyhow!("entrée tronquée ou taille invalide")) };
+        check_size(e.size.max(e.packed))?;
         // Capacité initiale prudente : la taille annoncée n'est pas fiable.
         let cap = (e.size as usize).min(64 << 20);
         f.seek(SeekFrom::Start(e.offset))?;
@@ -313,44 +448,40 @@ impl Dat {
             DatKind::Zip | DatKind::SevenZ => self.read_archive(idx),
             DatKind::Troika => {
                 if e.flags == 2 {
-                    let mut packed = vec![0u8; fits(e.packed)?];
+                    let mut packed = alloc(fits(e.packed)?)?;
                     f.read_exact(&mut packed)?;
-                    let mut out = Vec::with_capacity(cap);
-                    flate2::read::ZlibDecoder::new(&packed[..]).take(MAX_ENTRY).read_to_end(&mut out).map_err(|e| anyhow!("zlib : {e}"))?;
-                    Ok(out)
+                    read_all(flate2::read::ZlibDecoder::new(&packed[..]), e.size).map_err(|e| anyhow!("zlib : {e}"))
                 } else {
-                    let mut out = vec![0u8; fits(e.size)?];
+                    let mut out = alloc(fits(e.size)?)?;
                     f.read_exact(&mut out)?;
                     Ok(out)
                 }
             }
             DatKind::Dat2 => {
-                let mut packed = vec![0u8; fits(e.packed)?];
+                let mut packed = alloc(fits(e.packed)?)?;
                 f.read_exact(&mut packed)?;
                 if e.flags == 0 {
                     return Ok(packed);
                 }
-                let mut out = Vec::with_capacity(cap);
-                flate2::read::ZlibDecoder::new(&packed[..]).take(MAX_ENTRY).read_to_end(&mut out).map_err(|e| anyhow!("zlib : {e}"))?;
-                Ok(out)
+                read_all(flate2::read::ZlibDecoder::new(&packed[..]), e.size).map_err(|e| anyhow!("zlib : {e}"))
             }
             DatKind::Dat1 => {
                 let kind = if e.flags == 0 { 0x10 } else { e.flags & 0xF0 };
                 match kind {
                     0x20 => {
-                        let mut out = vec![0u8; fits(e.size)?];
+                        let mut out = alloc(fits(e.size)?)?;
                         f.read_exact(&mut out)?;
                         Ok(out)
                     }
                     0x10 => {
-                        let mut packed = vec![0u8; fits(e.packed)?];
+                        let mut packed = alloc(fits(e.packed)?)?;
                         f.read_exact(&mut packed)?;
                         let mut out = Vec::with_capacity(cap);
                         lzss(&packed, &mut out);
                         Ok(out)
                     }
                     0x40 => {
-                        let mut raw = vec![0u8; fits(e.packed)?];
+                        let mut raw = alloc(fits(e.packed)?)?;
                         f.read_exact(&mut raw)?;
                         let mut out = Vec::with_capacity(cap);
                         let mut i = 0usize;
@@ -428,6 +559,7 @@ pub fn lzss_literal_only(data: &[u8]) -> Vec<u8> {
 /// * Arcanum : le nom est le chemin relatif complet (séparateur `\`), les dossiers n'ont rien de plus.
 /// * Temple of Elemental Evil : le nom est celui d'un seul niveau, et chaque entrée porte trois entiers de plus (parent,
 ///   premier enfant, dernier enfant) qui donnent l'arborescence.
+///
 /// On essaie les variantes et on garde celle qui consomme exactement l'index.
 fn parse_troika(idx: &[u8]) -> Result<Vec<DatEntry>> {
     for (file_extra, dir_extra) in [(0usize, 0usize), (12, 12), (0, 12)] {
@@ -482,7 +614,7 @@ fn parse_troika_with(idx: &[u8], file_extra: usize, dir_extra: usize) -> Option<
         }
         let path = norm(&full);
         if !path.is_empty() {
-            v.push(DatEntry { path, flags: *ty, offset: *offset as u64, size: *size, packed: *packed });
+            v.push(DatEntry { path, flags: *ty, offset: *offset as u64, size: *size as u64, packed: *packed as u64 });
         }
     }
     Some(v)
@@ -490,7 +622,7 @@ fn parse_troika_with(idx: &[u8], file_extra: usize, dir_extra: usize) -> Option<
 
 /// Index d'une archive ZIP : les entrées de type fichier, par numéro d'ordre (stocké dans `offset`).
 fn parse_zip(path: &Path) -> Result<Vec<DatEntry>> {
-    let f = std::fs::File::open(path)?;
+    let f = open_shared(path)?;
     let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| anyhow!("{} : archive ZIP illisible ({e})", path.display()))?;
     let mut v = Vec::with_capacity(z.len());
     for i in 0..z.len() {
@@ -501,7 +633,7 @@ fn parse_zip(path: &Path) -> Result<Vec<DatEntry>> {
         let Ok(name) = f.name() else { continue };
         let p = norm(&name);
         if !p.is_empty() {
-            v.push(DatEntry { path: p, flags: 0, offset: i as u64, size: f.size().min(u32::MAX as u64) as u32, packed: f.compressed_size().min(u32::MAX as u64) as u32 });
+            v.push(DatEntry { path: p, flags: 0, offset: i as u64, size: f.size(), packed: f.compressed_size() });
         }
     }
     Ok(v)
@@ -517,7 +649,7 @@ fn parse_sevenz(path: &Path) -> Result<Vec<DatEntry>> {
         }
         let p = norm(&f.name);
         if !p.is_empty() {
-            v.push(DatEntry { path: p, flags: 0, offset: i as u64, size: f.size.min(u32::MAX as u64) as u32, packed: f.compressed_size.min(u32::MAX as u64) as u32 });
+            v.push(DatEntry { path: p, flags: 0, offset: i as u64, size: f.size, packed: f.compressed_size });
         }
     }
     Ok(v)
@@ -541,7 +673,7 @@ fn parse_dat2(tree: &[u8], base: u64) -> Result<Vec<DatEntry>> {
         let size = rd32(&mut p)?;
         let packed = rd32(&mut p)?;
         let offset = rd32(&mut p)?;
-        v.push(DatEntry { path: norm(&String::from_utf8_lossy(name)), flags: comp as u32, offset: base + offset as u64, size, packed });
+        v.push(DatEntry { path: norm(&String::from_utf8_lossy(name)), flags: comp as u32, offset: base + offset as u64, size: size as u64, packed: packed as u64 });
     }
     Ok(v)
 }
@@ -585,7 +717,7 @@ fn parse_dat1(d: &[u8]) -> Result<Vec<DatEntry>> {
             let size = rd32(&mut p)?;
             let packed = rd32(&mut p)?;
             let path = if dir.is_empty() { norm(&name) } else { format!("{dir}/{}", norm(&name)) };
-            v.push(DatEntry { path, flags, offset: offset as u64, size, packed });
+            v.push(DatEntry { path, flags, offset: offset as u64, size: size as u64, packed: packed as u64 });
         }
     }
     Ok(v)
@@ -623,6 +755,7 @@ pub fn write_dat2(files: &[(&str, &[u8], bool)]) -> Vec<u8> {
 }
 
 /// Écrit une archive DAT1 avec fichiers bruts (0x20) ou LZSS par blocs (0x40) (tests).
+#[allow(clippy::type_complexity)]
 pub fn write_dat1(dirs: &[(&str, Vec<(&str, Vec<u8>, bool)>)]) -> Vec<u8> {
     let mut idx = Vec::new();
     let be = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_be_bytes());

@@ -28,11 +28,7 @@ pub fn decode(data: &[u8]) -> Result<Mp3> {
     let (mut channels, mut rate) = (0u16, 0u32);
     let mut samples: Vec<i16> = Vec::new();
     let mut buf: Option<SampleBuffer<i16>> = None;
-    loop {
-        let pkt = match format.next_packet() {
-            Ok(p) => p,
-            Err(_) => break,
-        };
+    while let Ok(pkt) = format.next_packet() {
         if pkt.track_id() != id {
             continue;
         }
@@ -47,6 +43,9 @@ pub fn decode(data: &[u8]) -> Result<Mp3> {
                 let b = buf.as_mut().unwrap();
                 b.copy_interleaved_ref(audio);
                 samples.extend_from_slice(b.samples());
+                if samples.len() >= crate::audio::MAX_SAMPLES {
+                    break;
+                }
             }
             // Trame corrompue : on la saute.
             Err(Error::DecodeError(_)) => continue,

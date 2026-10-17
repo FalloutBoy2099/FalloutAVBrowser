@@ -4,6 +4,13 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 
+/// Nombre maximal d'échantillons (toutes pistes confondues) qu'un fichier peut produire : environ 25 minutes en stéréo 44,1 kHz.
+/// Un fichier piégé ne doit pas pouvoir exiger des dizaines de gigaoctets de mémoire.
+pub const MAX_SAMPLES: usize = 1 << 27;
+
+/// Nombre maximal de pixels d'une image vidéo (4096 x 4096).
+pub const MAX_PIXELS: usize = 4096 * 4096;
+
 /// Audio PCM 16 bits entrelacé.
 #[derive(Clone)]
 pub struct Pcm {
@@ -166,7 +173,7 @@ fn fill(st: &Mutex<State>, out: &mut [f32], ch: usize, dev_rate: f64) {
     if !playing || ch == 0 {
         return;
     }
-    let step = pcm.rate as f64 / dev_rate * s.speed;
+    let step = pcm.rate.max(1) as f64 / dev_rate * s.speed;
     let sc = pcm.channels.max(1) as usize;
     let frames = pcm.frames();
     let at = |f: usize, c: usize| -> f32 { pcm.samples.get(f * sc + c.min(sc - 1)).copied().unwrap_or(0) as f32 / 32768.0 };

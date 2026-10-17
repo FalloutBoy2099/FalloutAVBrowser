@@ -39,6 +39,9 @@ pub fn decode(d: &[u8]) -> Result<Wav> {
     if channels == 0 {
         bail!("WAV sans canal");
     }
+    if rate == 0 || rate > 768_000 {
+        bail!("fréquence WAV invalide ({rate} Hz)");
+    }
     let samples: Vec<i16> = match (tag, bits) {
         (1 | 0xFFFE, 8) => data.iter().map(|&v| ((v as i16) - 128) << 8).collect(),
         (1 | 0xFFFE, 16) => data.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect(),

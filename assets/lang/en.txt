@@ -306,15 +306,8 @@ av.stereo=stereo
 av.frame_now=Current frame
 av.warning=Warning
 av.about_based=Based on Fallout Image Browser. ACM decoder ported from libacm.
-av.about_formats=ACM  ·  MP3  ·  WAV  ·  MVE  ·  DAT (Fallout 1 / 2)
-av.about_keys=Space: play / pause
-Left / Right: seek 5 s
-Up / Down, Page Up / Page Down: previous / next file
-Home / End: first / last file
-F: fit   + / −: zoom   Enter: 100 %
-T: folder tree   I: properties   F5: reload
-Ctrl+N / Ctrl+O / Ctrl+D: open   Ctrl+L: current folder
-F11: full screen
+av.about_formats=ACM  ·  MP3  ·  WAV  ·  MVE  ·  BIK  ·  DAT / ZIP / 7z
+av.about_keys=Space: play / pause\nLeft / Right: seek 5 s\nUp / Down, Page Up / Page Down: previous / next file\nHome / End: first / last file\nF: fit   + / −: zoom   Enter: 100 %\nT: folder tree   I: properties   F5: reload\nCtrl+N / Ctrl+O / Ctrl+D: open   Ctrl+L: current folder\nF11: full screen
 
 t.refresh=Refresh
 t.desktop=Desktop

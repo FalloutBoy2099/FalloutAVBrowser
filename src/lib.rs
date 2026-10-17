@@ -25,6 +25,8 @@ pub mod mp3;
 pub mod mve;
 pub mod opener;
 pub mod tree;
+pub mod ui;
 pub mod video;
+pub mod video_worker;
 pub mod wav;
 pub mod winprefs;

@@ -215,7 +215,7 @@ impl DirNode {
                 for e in files {
                     let p = self.path.join(e.name());
                     if is_supported(&p) {
-                        self.files.push(FileEntry { path: p, name: e.name().to_string(), size: e.size as u64, modified: None });
+                        self.files.push(FileEntry { path: p, name: e.name().to_string(), size: e.size, modified: None });
                     }
                 }
             }

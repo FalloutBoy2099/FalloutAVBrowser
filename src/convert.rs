@@ -370,7 +370,7 @@ fn audio_plan(p: &Pcm, s: &ConvSettings, start: f32, end: f32) -> ((usize, usize
     let b = if end > 0.0 { ((end as f64 * p.rate as f64) as usize).clamp(a, total) } else { total };
     let ch = if s.channels == 0 { p.channels } else { s.channels as u16 };
     let rate = if s.rate == 0 { p.rate } else { s.rate };
-    let n_out = ((b - a) as f64 * rate as f64 / p.rate as f64).round() as usize;
+    let n_out = ((b - a) as f64 * rate as f64 / p.rate.max(1) as f64).round() as usize;
     ((a, b), ch, rate, n_out)
 }
 
@@ -387,8 +387,8 @@ fn process_audio(p: &Pcm, s: &ConvSettings, start: f32, end: f32) -> (Vec<i16>, 
     }
     // Rééchantillonnage linéaire.
     if rate_out != p.rate && !frames.is_empty() {
-        let n = (frames.len() as f64 * rate_out as f64 / p.rate as f64).round().max(1.0) as usize;
-        let step = p.rate as f64 / rate_out as f64;
+        let n = (frames.len() as f64 * rate_out as f64 / p.rate.max(1) as f64).round().max(1.0) as usize;
+        let step = p.rate.max(1) as f64 / rate_out.max(1) as f64;
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let pos = i as f64 * step;
@@ -480,7 +480,7 @@ pub fn run(job: Job, done: &AtomicUsize, total: &AtomicUsize, cancel: &AtomicBoo
                     }
                 }
                 let png = crate::png::encode_rgba(v.width() as u32, v.height() as u32, &dec.rgba());
-                let file = if job.s.target == Target::FramePng { format!("{}_{:05}.png", job.name, idx + 1) } else { format!("{}_{:05}.png", job.name, idx + 1) };
+                let file = format!("{}_{:05}.png", job.name, idx + 1);
                 written.push(write_unique(&dir, &file, &png)?);
                 k += 1;
                 done.store(k, Ordering::Relaxed);

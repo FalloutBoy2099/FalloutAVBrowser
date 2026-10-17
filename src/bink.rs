@@ -6,6 +6,9 @@
 use crate::bink_data::*;
 use anyhow::{Result, anyhow, bail};
 
+/// Portion vidéo d'une image (début, taille) et paquets audio (début, taille) de chaque piste.
+type VideoPart = (usize, usize, Vec<(usize, usize)>);
+
 const FLAG_ALPHA: u32 = 0x0010_0000;
 const AUD_USEDCT: u16 = 0x1000;
 const AUD_STEREO: u16 = 0x2000;
@@ -62,6 +65,9 @@ impl Bink {
         if n_frames == 0 || n_frames > 1_000_000 || width == 0 || height == 0 || width > 8192 || height > 8192 || fps_num == 0 || fps_den == 0 || n_audio > 256 {
             bail!("en-tête Bink invalide");
         }
+        if width * height > crate::audio::MAX_PIXELS {
+            bail!("dimensions vidéo trop grandes ({width}x{height})");
+        }
         let mut p = 44;
         if version == b'k' {
             p += 4;
@@ -98,16 +104,21 @@ impl Bink {
         }
         let mut b = Bink { data, width, height, fps_num, fps_den, version, flags, frames, audio: None, warning: None };
         if let Some(&(rate, aflags)) = tracks.first() {
-            match b.decode_audio(rate, aflags, n_audio) {
-                Ok(a) => b.audio = Some(a),
-                Err(e) => b.warning = Some(format!("audio : {e}")),
+            // Une fréquence nulle ou absurde invalide la piste audio, pas la vidéo.
+            if rate == 0 || rate > 768_000 {
+                b.warning = Some(format!("audio ignoré : fréquence invalide ({rate} Hz)"));
+            } else {
+                match b.decode_audio(rate, aflags, n_audio) {
+                    Ok(a) => b.audio = Some(a),
+                    Err(e) => b.warning = Some(format!("audio : {e}")),
+                }
             }
         }
         Ok(b)
     }
 
     /// Portion vidéo d'une image : après les paquets audio (taille sur 4 octets + données, par piste).
-    fn video_part(&self, f: &FrameRec, n_audio: usize) -> Result<(usize, usize, Vec<(usize, usize)>)> {
+    fn video_part(&self, f: &FrameRec, n_audio: usize) -> Result<VideoPart> {
         let d = &self.data;
         let end = f.pos + f.size;
         let mut p = f.pos;
@@ -132,6 +143,9 @@ impl Bink {
         let mut dec = AudioDec::new(rate, channels, aflags & AUD_USEDCT != 0, self.version == b'b')?;
         let mut out: Vec<i16> = Vec::new();
         for f in &self.frames {
+            if out.len() >= crate::audio::MAX_SAMPLES {
+                break;
+            }
             let Ok((_, _, audio)) = self.video_part(f, n_audio) else { continue };
             if let Some(&(off, sz)) = audio.first()
                 && sz >= 4
@@ -1323,7 +1337,6 @@ const RLE_LENGTH_TAB: [usize; 16] = [2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15
 struct AudioDec {
     rdft: bool,
     version_b: bool,
-    channels: usize,
     /// Canaux traités indépendamment (1 pour RDFT, dont le flux est déjà entrelacé).
     chans: usize,
     frame_len: usize,
@@ -1364,7 +1377,7 @@ impl AudioDec {
         for (i, q) in quant_table.iter_mut().enumerate() {
             *q = (i as f32 * 0.152_891_65_f32).exp() * root;
         }
-        let half = (rate_eff + 1) / 2;
+        let half = rate_eff.div_ceil(2);
         let mut num_bands = 1;
         while num_bands < 25 {
             if half <= CRITICAL_FREQS[num_bands - 1] as u64 {
@@ -1378,7 +1391,7 @@ impl AudioDec {
             bands[i] = ((CRITICAL_FREQS[i - 1] as u64 * frame_len as u64 / half) as usize) & !1;
         }
         bands[num_bands] = frame_len;
-        Ok(AudioDec { rdft, version_b, channels, chans, frame_len, overlap, bands, num_bands, quant_table, root, previous: vec![vec![0.0; overlap]; 6], first: true })
+        Ok(AudioDec { rdft, version_b, chans, frame_len, overlap, bands, num_bands, quant_table, root, previous: vec![vec![0.0; overlap]; 6], first: true })
     }
 
     /// Décode tous les blocs d'un paquet audio ; les échantillons sont ajoutés (entrelacés) à `out`.

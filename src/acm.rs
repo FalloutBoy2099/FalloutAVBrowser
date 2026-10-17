@@ -8,7 +8,7 @@ use anyhow::{Result, anyhow, bail};
 const ACM_ID: u32 = 0x032897;
 const WAVC_ID: u32 = 0x564157;
 const MAX_BLOCK_LEN: usize = 1024 * 1024;
-const MAX_SAMPLES: u32 = 1 << 30;
+const MAX_SAMPLES: u32 = 1 << 27;
 
 pub struct AcmAudio {
     pub channels: u16,
@@ -357,7 +357,7 @@ pub fn decode(data: &[u8], force_stereo: bool) -> Result<AcmAudio> {
     }
     let mut d = Decoder { level, rows, cols, block: vec![0; block_len], wrap: vec![0; (2 * cols).saturating_sub(2).max(2)], mid: vec![0; 0x10000] };
     let total = total as usize;
-    let mut samples: Vec<i16> = Vec::with_capacity(total);
+    let mut samples: Vec<i16> = Vec::with_capacity(total.min(8 << 20));
     let mut warning = None;
     while samples.len() < total {
         match d.decode_block(&mut br) {

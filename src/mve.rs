@@ -120,8 +120,12 @@ impl Mve {
                         have_audio = true;
                     }
                     0x05 if b.len() >= 4 => {
-                        m.width = u16le(b, 0) * 8;
-                        m.height = u16le(b, 2) * 8;
+                        let (w, h) = (u16le(b, 0) * 8, u16le(b, 2) * 8);
+                        // Les dimensions viennent du fichier : une valeur absurde ne doit pas provoquer une allocation géante.
+                        if w == 0 || h == 0 || w * h > crate::audio::MAX_PIXELS {
+                            bail!("dimensions vidéo invalides ({w}x{h})");
+                        }
+                        (m.width, m.height) = (w, h);
                         if ver >= 2 && u16le(b, 6) != 0 {
                             m.warning = Some("vidéo 16 bits non prise en charge".to_string());
                         }
@@ -129,9 +133,14 @@ impl Mve {
                     0x08 | 0x09 if b.len() >= 6 && have_audio => {
                         let mask = u16le(b, 2);
                         let len = u16le(b, 4);
+                        // Place restante : chaque octet d'un fichier piégé pourrait annoncer des milliers d'échantillons de silence.
+                        let room = crate::audio::MAX_SAMPLES.saturating_sub(samples.len());
+                        if room == 0 {
+                            m.warning.get_or_insert_with(|| "audio tronqué (fichier trop long)".to_string());
+                        }
                         if mask & 1 != 0 {
                             if op == 0x09 {
-                                let n = if a_comp { len.saturating_sub(2 * a_ch as usize) } else if a_16 { len / 2 } else { len };
+                                let n = (if a_comp { len.saturating_sub(2 * a_ch as usize) } else if a_16 { len / 2 } else { len }).min(room);
                                 samples.resize(samples.len() + n, 0);
                             } else {
                                 let payload = &b[6..];
@@ -142,16 +151,16 @@ impl Mve {
                                             pred[c] = i16::from_le_bytes([payload[2 * c], payload[2 * c + 1]]) as i32;
                                         }
                                         let mut ch = 0usize;
-                                        for &byte in &payload[2 * nch..] {
+                                        for &byte in payload[2 * nch..].iter().take(room) {
                                             pred[ch] = (pred[ch] + DPCM_TABLE[byte as usize] as i32).clamp(-32768, 32767);
                                             samples.push(pred[ch] as i16);
                                             ch = (ch + 1) % nch;
                                         }
                                     }
                                 } else if a_16 {
-                                    samples.extend(payload.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+                                    samples.extend(payload.chunks_exact(2).take(room).map(|c| i16::from_le_bytes([c[0], c[1]])));
                                 } else {
-                                    samples.extend(payload.iter().map(|&v| ((v as i16) - 128) << 8));
+                                    samples.extend(payload.iter().take(room).map(|&v| ((v as i16) - 128) << 8));
                                 }
                             }
                         }
@@ -173,7 +182,9 @@ impl Mve {
         if m.width == 0 || m.height == 0 {
             bail!("MVE sans vidéo");
         }
-        if have_audio && !samples.is_empty() {
+        if have_audio && (a_rate == 0 || a_rate > 768_000) {
+            m.warning.get_or_insert_with(|| format!("audio ignoré : fréquence invalide ({a_rate} Hz)"));
+        } else if have_audio && !samples.is_empty() {
             m.audio = Some(MveAudio { rate: a_rate, channels: a_ch, samples });
         }
         m.data = data;
