@@ -68,17 +68,34 @@ impl App {
         }
     }
 
+    /// Fenêtre « À propos » : modale, avec une barre de titre (titre centré, bouton × à droite) sur un fond estompé qui bloque
+    /// l'interface ; seuls le × et Échap la ferment (comme dans FalloutWorldStudio).
     pub(crate) fn about_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_about;
-        egui::Window::new(tr("m.about"))
-            .open(&mut open)
-            .frame(crate::dialog::window_frame(ctx))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_min_width(480.0);
-                ui.heading("FalloutAVBrowser");
+        if !self.show_about {
+            return;
+        }
+        let mut close = false;
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::ZERO).corner_radius(egui::CornerRadius::same(10));
+        egui::Modal::new(Id::new("about_modal")).frame(frame).show(ctx, |ui| {
+            ui.set_width(520.0);
+            let header = egui::Frame::new()
+                .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+                .corner_radius(egui::CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 })
+                .inner_margin(egui::Margin::symmetric(16, 8));
+            header.show(ui, |ui| {
+                let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                ui.painter().text(bar.center(), Align2::CENTER_CENTER, tr("m.about"), FontId::proportional(18.0), ui.visuals().weak_text_color());
+                let x = egui::Button::new(egui::RichText::new("×").size(22.0)).frame(false);
+                let x_rect = Rect::from_center_size(pos2(bar.right() - 12.0, bar.center().y), vec2(28.0, 28.0));
+                if ui.put(x_rect, x).on_hover_text(tr("c.close")).clicked() {
+                    close = true;
+                }
+            });
+            egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("FalloutAVBrowser");
+                    ui.label(egui::RichText::new("by Kain").italics());
+                });
                 ui.label(egui::RichText::new(format!("v{}  ·  Rust + egui + wgpu", env!("CARGO_PKG_VERSION"))).weak());
                 ui.label(egui::RichText::new(tr("av.about_based")).weak());
                 ui.add_space(4.0);
@@ -89,8 +106,14 @@ impl App {
                 ui.separator();
                 ui.label(egui::RichText::new(tr("about.keys_title")).strong());
                 ui.label(tr("av.about_keys"));
+                ui.add_space(4.0);
+                ui.separator();
+                ui.label(format!("{}: {}", tr("m.language"), i18n::lang().native_name()));
             });
-        self.show_about = open;
+        });
+        if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_about = false;
+        }
     }
 
     /// Fenêtre « Renommer » : le nom sans l'extension est sélectionné ; un nom invalide ou déjà pris est refusé.

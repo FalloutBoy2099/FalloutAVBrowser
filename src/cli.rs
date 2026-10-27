@@ -46,7 +46,7 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
             println!("{} entrées ({:?})", d.entries.len(), d.kind);
         }
         "--convert" => {
-            // --convert <fichier> <wav16|wav8|f32|raw|frame|seq|orig> <dossier> [fréquence] [canaux] [normaliser 0/1]
+            // --convert <fichier> <wav16|wav8|f32|raw|mp3|ogg|flac|video|frame|seq|orig> <dossier> [fréquence] [canaux] [normaliser 0/1]
             use crate::convert::{ConvSettings, Job, Source, Target};
             use std::sync::atomic::{AtomicBool, AtomicUsize};
             let path = Path::new(a(1)?);
@@ -56,13 +56,17 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
                 "wav8" => Target::Wav8,
                 "f32" => Target::WavF32,
                 "raw" => Target::Raw16,
+                "mp3" => Target::Mp3,
+                "ogg" => Target::Ogg,
+                "flac" => Target::Flac,
+                "video" => Target::Video,
                 "frame" => Target::FramePng,
                 "seq" => Target::Sequence,
                 "orig" => Target::Original,
                 t => anyhow::bail!("cible inconnue : {t}"),
             };
             let num = |i: usize| args.get(i).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-            let s = ConvSettings { target, rate: num(4), channels: num(5) as u8, normalize: num(6) == 1, out_dir: None, last_out_dir: None };
+            let s = ConvSettings { target, rate: num(4), channels: num(5) as u8, normalize: num(6) == 1, ..Default::default() };
             let source = Source { path: path.to_path_buf(), pcm: l.pcm, video: l.video, frame: 0 };
             let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let job = Job { source, s, out_dir: a(3)?.into(), name, start: 0.0, end: 0.0, frame_first: 1, frame_last: 5, frame_step: 2 };

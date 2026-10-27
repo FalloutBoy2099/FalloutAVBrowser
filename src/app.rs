@@ -21,10 +21,30 @@ const MIN_ZOOM: f32 = 0.05;
 pub(crate) const MAX_FAVORITES: usize = 5;
 const MAX_ZOOM: f32 = 32.0;
 
+/// Thème de l'interface : celui du système, sombre ou clair.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub fn preference(self) -> egui::ThemePreference {
+        match self {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Dark => egui::ThemePreference::Dark,
+            Theme::Light => egui::ThemePreference::Light,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
     pub lang: Option<Lang>,
+    pub theme: Theme,
     pub show_tree: bool,
     pub show_props: bool,
     pub sort: SortKey,
@@ -42,6 +62,12 @@ pub struct Settings {
     pub favorites: Vec<PathBuf>,
     /// Couleur d'accent du signal audio (forme d'onde et trait de lecture).
     pub wave_color: [u8; 3],
+    /// Couleur du trait de lecture sur la forme d'onde.
+    pub line_color: [u8; 3],
+    /// Barre de lecture (lecture / arrêt / position) affichée pour les fichiers audio.
+    pub show_transport: bool,
+    /// Clic droit sur la zone d'affichage : menu contextuel (convertir le fichier).
+    pub canvas_menu: bool,
     /// Réglages de la fenêtre « Convertir le fichier ».
     pub conv: ConvSettings,
 }
@@ -50,6 +76,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             lang: None,
+            theme: Theme::System,
             show_tree: true,
             show_props: true,
             sort: SortKey::Name,
@@ -63,6 +90,9 @@ impl Default for Settings {
             chan_mode: ChannelMode::Auto,
             favorites: Vec::new(),
             wave_color: [90, 190, 120],
+            line_color: [90, 190, 120],
+            show_transport: true,
+            canvas_menu: true,
             conv: ConvSettings::default(),
         }
     }
@@ -203,6 +233,7 @@ impl App {
             settings,
         };
         app.apply_fonts(&cc.egui_ctx);
+        cc.egui_ctx.set_theme(app.settings.theme.preference());
         app.tree.sort = app.settings.sort;
         app.tree.descending = app.settings.sort_desc;
         match initial {

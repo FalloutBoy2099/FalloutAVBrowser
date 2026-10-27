@@ -1,12 +1,17 @@
 //! Barre de menus : un menu = une méthode.
 
 use super::*;
+use crate::app::Theme;
 use crate::i18n::Lang;
 use crate::media::ChannelMode;
 use crate::tree::SortKey;
 
-/// Couleurs proposées pour le signal audio.
-const WAVE_COLORS: [[u8; 3]; 10] = [[90, 190, 120], [90, 150, 230], [80, 200, 210], [240, 160, 60], [230, 90, 90], [230, 110, 180], [160, 120, 230], [230, 210, 80], [230, 230, 230], [150, 150, 150]];
+/// Couleurs proposées (Material Design) : pour chaque teinte, 400 puis 800 (rouge, rose, violet, violet foncé, indigo, bleu, bleu clair, cyan, sarcelle, vert, vert clair, citron vert, jaune, ambre, orange, orange foncé, marron, gris, gris bleuté).
+const WAVE_COLORS: [[u8; 3]; 38] = [[239, 83, 80], [198, 40, 40], [236, 64, 122], [173, 20, 87], [171, 71, 188], [106, 27, 154], [126, 87, 194], [69, 39, 160], [92, 107, 192], [40, 53, 147], [66, 165, 245], [21, 101, 192], [41, 182, 246], [2, 119, 189], [38, 198, 218], [0, 131, 143], [38, 166, 154], [0, 105, 92], [102, 187, 106], [46, 125, 50], [156, 204, 101], [85, 139, 47], [212, 225, 87], [158, 157, 36], [255, 238, 88], [249, 168, 37], [255, 202, 40], [255, 143, 0], [255, 167, 38], [239, 108, 0], [255, 112, 67], [216, 67, 21], [141, 110, 99], [78, 52, 46], [189, 189, 189], [66, 66, 66], [120, 144, 156], [55, 71, 79]];
+/// Pastilles par ligne (nombre pair : une teinte 400 / 800 ne se coupe pas) et leur taille ; l'espacement est le même en largeur et en hauteur.
+const SWATCH_COLS: f32 = 8.0;
+const SWATCH: f32 = 24.0;
+const SWATCH_GAP: f32 = 4.0;
 
 /// Entrée de menu avec son raccourci affiché à droite ; vrai si elle a été choisie (le menu se referme alors).
 fn item(ui: &mut Ui, label: String, shortcut: &str, enabled: bool) -> bool {
@@ -17,6 +22,24 @@ fn item(ui: &mut Ui, label: String, shortcut: &str, enabled: bool) -> bool {
     r.clicked()
 }
 
+/// Palette de couleurs (la couleur choisie est entourée).
+fn color_picker(ui: &mut Ui, current: &mut [u8; 3]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(SWATCH_GAP, SWATCH_GAP);
+        ui.set_max_width(SWATCH_COLS * SWATCH + (SWATCH_COLS - 1.0) * SWATCH_GAP);
+        for c in WAVE_COLORS {
+            let (rect, resp) = ui.allocate_exact_size(vec2(SWATCH, SWATCH), Sense::click());
+            ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(c[0], c[1], c[2]));
+            if *current == c {
+                ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, ui.visuals().strong_text_color()), egui::StrokeKind::Inside);
+            }
+            if resp.clicked() {
+                *current = c;
+            }
+        }
+    });
+}
+
 impl App {
     pub(crate) fn menu_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
@@ -24,7 +47,7 @@ impl App {
             ui.menu_button(tr("m.file"), |ui| self.file_menu(ui, &ctx));
             ui.menu_button(tr("m.view"), |ui| self.view_menu(ui, &ctx));
             ui.menu_button(tr("m.navigation"), |ui| self.navigation_menu(ui, &ctx));
-            ui.menu_button(tr("m.language"), |ui| self.language_menu(ui));
+            ui.menu_button(tr("m.settings"), |ui| self.settings_menu(ui, &ctx));
             ui.menu_button(tr("m.help"), |ui| self.help_menu(ui));
         });
     }
@@ -48,6 +71,9 @@ impl App {
         if item(ui, tr("av.export"), "Ctrl+E", has_file) {
             self.open_convert();
         }
+        if item(ui, tr("m.ffmpeg"), "", true) {
+            self.conv.pick_ffmpeg();
+        }
         ui.separator();
         if item(ui, tr("m.open_default"), "Ctrl+Enter", has_file) {
             self.open_default();
@@ -66,27 +92,15 @@ impl App {
             self.toggle_fullscreen(ctx);
         }
         ui.separator();
-        ui.menu_button(tr("av.wave_color"), |ui| self.wave_color_picker(ui));
+        ui.menu_button(tr("av.line_color"), |ui| color_picker(ui, &mut self.settings.line_color));
+        ui.menu_button(tr("av.wave_color"), |ui| color_picker(ui, &mut self.settings.wave_color));
+        ui.separator();
+        ui.checkbox(&mut self.settings.show_transport, tr("av.show_transport"));
+        ui.separator();
+        ui.checkbox(&mut self.settings.canvas_menu, tr("m.canvas_menu"));
         ui.separator();
         ui.checkbox(&mut self.win.remember_size, tr("m.remember_size"));
         ui.checkbox(&mut self.win.remember_pos, tr("m.remember_pos"));
-    }
-
-    /// Palette de couleurs du signal audio (la couleur choisie est entourée).
-    fn wave_color_picker(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.set_max_width(150.0);
-            for c in WAVE_COLORS {
-                let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
-                ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(c[0], c[1], c[2]));
-                if self.settings.wave_color == c {
-                    ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, ui.visuals().strong_text_color()), egui::StrokeKind::Inside);
-                }
-                if resp.clicked() {
-                    self.settings.wave_color = c;
-                }
-            }
-        });
     }
 
     fn navigation_menu(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -122,6 +136,20 @@ impl App {
         if changed {
             self.apply_view_options();
         }
+    }
+
+    /// Menu Réglages : langue et thème.
+    fn settings_menu(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        ui.menu_button(tr("m.language"), |ui| self.language_menu(ui));
+        ui.menu_button(tr("m.theme"), |ui| {
+            let mut changed = false;
+            for (t, k) in [(Theme::System, "m.theme_system"), (Theme::Dark, "m.theme_dark"), (Theme::Light, "m.theme_light")] {
+                changed |= ui.radio_value(&mut self.settings.theme, t, tr(k)).changed();
+            }
+            if changed {
+                ctx.set_theme(self.settings.theme.preference());
+            }
+        });
     }
 
     fn language_menu(&mut self, ui: &mut Ui) {

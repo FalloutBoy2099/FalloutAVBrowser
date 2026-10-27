@@ -12,6 +12,7 @@ const ARROW_W: f32 = 14.0;
 /// Commande choisie dans le menu contextuel d'une ligne.
 enum TreeAction {
     ExpandAll(PathBuf),
+    CollapseAll(PathBuf),
     CollapseOthers(PathBuf),
     Refresh(PathBuf),
     Reveal(PathBuf),
@@ -84,7 +85,8 @@ impl App {
         if let Some(p) = open {
             if crate::dat::stat(&p).is_some() || p.is_dir() {
                 self.open_dir(ctx, &p, false);
-                self.reveal_in_tree();
+                // Le focus de l'explorateur va sur le dossier choisi (et non sur le fichier en cours).
+                self.tree_scroll_to = self.tree.rows.iter().position(|r| r.path == p);
             } else {
                 self.toast(tr("t.folder_missing"));
             }
@@ -171,6 +173,7 @@ impl App {
                     self.tree.expand_all(&path);
                 }
             }
+            TreeAction::CollapseAll(path) => self.tree.collapse_all(&path),
             TreeAction::CollapseOthers(path) => self.tree.collapse_others(&path),
             TreeAction::Refresh(path) => {
                 self.tree.reload_dir(&path);
@@ -248,6 +251,9 @@ fn row_menu(ui: &mut Ui, row: &Row, sel_dir: Option<&std::path::Path>, favs: &[P
     let mut action = None;
     if ui.add_enabled(is_dir, egui::Button::new(tr("t.expand_all"))).clicked() {
         action = Some(TreeAction::ExpandAll(row.path.clone()));
+    }
+    if ui.add_enabled(is_dir, egui::Button::new(tr("t.collapse_all"))).clicked() {
+        action = Some(TreeAction::CollapseAll(row.path.clone()));
     }
     if ui.button(tr("t.collapse_others")).clicked() {
         action = Some(TreeAction::CollapseOthers(row.path.clone()));

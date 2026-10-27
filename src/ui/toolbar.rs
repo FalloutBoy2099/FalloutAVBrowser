@@ -44,14 +44,14 @@ impl App {
                     // Champ numérique (nombre seul) avec boutons - / + par pas de 0,1.
                     let mut sp = self.settings.speed;
                     let mut changed = false;
-                    if ui.small_button("-").clicked() {
+                    if ui.add(egui::Button::new("-").min_size(vec2(28.0, 28.0))).clicked() {
                         sp -= 0.1;
                         changed = true;
                     }
                     let field = ui.add(egui::DragValue::new(&mut sp).range(0.2..=5.0).speed(0.02).fixed_decimals(1));
                     changed |= field.changed();
                     field.on_hover_text(tr("av.speed_tip"));
-                    if ui.small_button("+").clicked() {
+                    if ui.add(egui::Button::new("+").min_size(vec2(28.0, 28.0))).clicked() {
                         sp += 0.1;
                         changed = true;
                     }
@@ -99,14 +99,23 @@ impl App {
             }
             let time = format!("{} / {}", fmt_time(self.vt), fmt_time(dur));
             let time_w = ui.painter().layout_no_wrap(time.clone(), FontId::proportional(14.0), Color32::WHITE).size().x;
-            let mut t = self.vt;
-            ui.spacing_mut().slider_width = (ui.available_width() - time_w - 28.0).max(60.0);
-            let slider = ui.add_enabled(enabled && dur > 0.0, egui::Slider::new(&mut t, 0.0..=dur.max(0.001)).show_value(false).trailing_fill(true));
-            if slider.changed() {
-                self.seek(t);
-                self.update_video(&ctx, false);
+            // Barre de progression masquable pour l'audio (la vidéo la garde toujours).
+            let show_bar = self.settings.show_transport || self.is_video();
+            if show_bar {
+                let mut t = self.vt;
+                ui.spacing_mut().slider_width = (ui.available_width() - time_w - 28.0).max(60.0);
+                let slider = ui.add_enabled(enabled && dur > 0.0, egui::Slider::new(&mut t, 0.0..=dur.max(0.001)).show_value(false).trailing_fill(true));
+                if slider.changed() {
+                    self.seek(t);
+                    self.update_video(&ctx, false);
+                }
             }
-            ui.label(time);
+            if show_bar {
+                ui.label(time);
+            } else {
+                // Sans la barre : le temps reste à droite, à la place qu'il a avec la barre.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(time));
+            }
         });
         ui.add_space(3.0);
     }

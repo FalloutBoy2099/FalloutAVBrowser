@@ -12,6 +12,7 @@ pub mod cli;
 pub mod convert;
 pub mod dat;
 pub mod dialog;
+pub mod ffmpeg;
 pub mod fileops;
 pub mod i18n;
 pub mod icon;

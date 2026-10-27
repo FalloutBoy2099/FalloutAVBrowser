@@ -30,6 +30,14 @@ impl App {
             ui.painter().text(rect.center(), Align2::CENTER_CENTER, msg, FontId::proportional(16.0), ui.visuals().weak_text_color());
             return;
         }
+        if self.settings.canvas_menu {
+            resp.context_menu(|ui| {
+                if ui.add(egui::Button::new(tr("av.export")).shortcut_text("Ctrl+E")).clicked() {
+                    self.open_convert();
+                    ui.close();
+                }
+            });
+        }
         let events = if self.tex.is_some() && self.is_video() { self.draw_video(ui, rect, &resp) } else { self.draw_waveform(ui, rect, &resp) };
         if let Some(f) = events.zoom {
             self.zoom_by(f);
@@ -100,9 +108,10 @@ impl App {
             let (y0, y1) = (mid - hi.min(1.0) * wave.height() * 0.5, mid - lo.max(-1.0) * wave.height() * 0.5);
             ui.painter().line_segment([pos2(x, y0), pos2(x, y1.max(y0 + 1.0))], Stroke::new(thick, c));
         }
-        // Trait de lecture : la couleur du signal, semi-transparente.
+        // Trait de lecture : sa propre couleur.
+        let [lr, lg, lb] = self.settings.line_color;
         let px = wave.left() + wave.width() * played;
-        ui.painter().line_segment([pos2(px, wave.top()), pos2(px, wave.bottom())], Stroke::new(1.5, Color32::from_rgba_unmultiplied(wr, wg, wb, 170)));
+        ui.painter().line_segment([pos2(px, wave.top()), pos2(px, wave.bottom())], Stroke::new(1.5, Color32::from_rgb(lr, lg, lb)));
         if (resp.clicked() || resp.dragged())
             && let Some(p) = resp.interact_pointer_pos()
         {
