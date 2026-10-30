@@ -25,9 +25,12 @@ impl App {
             ui.painter().text(rect.center(), Align2::CENTER_CENTER, e, FontId::proportional(15.0), ui.visuals().error_fg_color);
             return;
         }
+        if self.loading {
+            self.draw_loading(ui, rect);
+            return;
+        }
         if self.loaded.is_none() {
-            let msg = if self.loading { tr("av.loading") } else { tr("av.hint") };
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, msg, FontId::proportional(16.0), ui.visuals().weak_text_color());
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, tr("av.hint"), FontId::proportional(16.0), ui.visuals().weak_text_color());
             return;
         }
         if self.settings.canvas_menu {
@@ -38,7 +41,12 @@ impl App {
                 }
             });
         }
-        let events = if self.tex.is_some() && self.is_video() { self.draw_video(ui, rect, &resp) } else { self.draw_waveform(ui, rect, &resp) };
+        if self.is_video() && self.tex.is_none() {
+            // Première image pas encore décodée : fond noir plutôt que la forme d'onde de la piste audio.
+            ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+            return;
+        }
+        let events = if self.is_video() { self.draw_video(ui, rect, &resp) } else { self.draw_waveform(ui, rect, &resp) };
         if let Some(f) = events.zoom {
             self.zoom_by(f);
         }
@@ -51,6 +59,18 @@ impl App {
         if let Some(t) = events.seek_to {
             self.seek(t);
         }
+    }
+
+    /// Chargement en cours : message, pourcentage et barre de progression (les gros fichiers prennent plusieurs secondes).
+    fn draw_loading(&self, ui: &mut Ui, rect: Rect) {
+        let pct = self.load_progress.load(std::sync::atomic::Ordering::Relaxed).min(100);
+        let weak = ui.visuals().weak_text_color();
+        let center = rect.center();
+        ui.painter().text(center - Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, format!("{} {pct} %", tr("av.loading")), FontId::proportional(16.0), weak);
+        let bar = Rect::from_center_size(center + Vec2::new(0.0, 6.0), Vec2::new(rect.width().min(320.0) * 0.8, 6.0));
+        ui.painter().rect_filled(bar, 3.0, ui.visuals().widgets.inactive.bg_fill);
+        let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * pct as f32 / 100.0, bar.height()));
+        ui.painter().rect_filled(done, 3.0, ui.visuals().selection.bg_fill);
     }
 
     /// Image de la vidéo, ajustée à la zone (ou zoomée / déplacée à la main).

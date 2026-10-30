@@ -6,8 +6,10 @@ use crate::bink::Bink;
 use crate::mve::Mve;
 use crate::video::Video;
 use anyhow::{Result, anyhow};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Interprétation du nombre de canaux d'un son.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -47,11 +49,38 @@ fn looks_stereo(s: &[i16]) -> bool {
     d2 > 0.0 && d2 < d1 * 0.7
 }
 
+/// Avancement du chargement en pourcentage (0 à 100), lisible depuis l'interface pendant que [`load_with_progress`] travaille.
+pub type Progress = Arc<AtomicU32>;
+
+/// Lit un fichier par blocs en reportant l'avancement dans la tranche `0..=span` du pourcentage.
+fn read_file(path: &Path, progress: &Progress, span: u32) -> Result<Vec<u8>> {
+    let err = |e: std::io::Error| anyhow!("{}: {e}", path.display());
+    let mut f = std::fs::File::open(path).map_err(err)?;
+    let total = f.metadata().map_err(err)?.len() as usize;
+    let mut data = Vec::with_capacity(total);
+    let mut chunk = vec![0u8; 8 << 20];
+    loop {
+        let n = f.read(&mut chunk).map_err(err)?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..n]);
+        progress.store((data.len() as u64 * span as u64 / total.max(1) as u64) as u32, Ordering::Relaxed);
+    }
+    Ok(data)
+}
+
 pub fn load(path: &Path, mode: ChannelMode) -> Result<Loaded> {
+    load_with_progress(path, mode, &Progress::default())
+}
+
+/// Comme [`load`] ; `progress` reçoit l'avancement : lecture 0-50 %, empreinte 50-85 %, analyse 85-100 %.
+pub fn load_with_progress(path: &Path, mode: ChannelMode, progress: &Progress) -> Result<Loaded> {
     let kind = kind_of(path).ok_or_else(|| anyhow!("format non pris en charge"))?;
-    let data = crate::dat::read_any(path)?;
+    let data = if crate::dat::split(path).is_some() { crate::dat::read_any(path)? } else { read_file(path, progress, 50)? };
     let size = data.len();
-    let sha256 = crate::hash::sha256_hex(&data);
+    let sha256 = crate::hash::sha256_hex_progress(&data, |f| progress.store(50 + (f * 35.0) as u32, Ordering::Relaxed));
+    progress.store(85, Ordering::Relaxed);
     let mut info = vec![];
     match kind {
         Kind::Acm => {

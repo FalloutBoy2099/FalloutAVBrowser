@@ -133,6 +133,8 @@ pub struct App {
     pub(crate) peaks: Vec<(f32, f32)>,
     pub(crate) error: Option<String>,
     pub(crate) loading: bool,
+    /// Avancement (0-100) du chargement en cours ; remplacé à chaque nouveau fichier.
+    pub(crate) load_progress: media::Progress,
     pub(crate) gen_id: u64,
     pub(crate) tx: Sender<LoadResult>,
     pub(crate) rx: Receiver<LoadResult>,
@@ -199,6 +201,7 @@ impl App {
             peaks: Vec::new(),
             error: None,
             loading: false,
+            load_progress: Default::default(),
             gen_id: 0,
             tx,
             rx,
@@ -359,6 +362,7 @@ impl App {
     pub fn show_file(&mut self, ctx: &egui::Context, path: &Path, play: bool) {
         self.gen_id += 1;
         self.loading = true;
+        self.load_progress = Default::default();
         self.wanted = Some(path.to_path_buf());
         self.index = self.files.iter().position(|f| f == path);
         self.error = None;
@@ -368,9 +372,9 @@ impl App {
         let meta = if crate::dat::is_virtual(path) { None } else { std::fs::metadata(path).ok() };
         self.modified = meta.as_ref().and_then(|m| m.modified().ok());
         self.created = meta.as_ref().and_then(|m| m.created().ok());
-        let (tx, mode, id, ctx, path) = (self.tx.clone(), self.settings.chan_mode, self.gen_id, ctx.clone(), path.to_path_buf());
+        let (tx, mode, id, ctx, path, progress) = (self.tx.clone(), self.settings.chan_mode, self.gen_id, ctx.clone(), path.to_path_buf(), self.load_progress.clone());
         std::thread::spawn(move || {
-            let r = std::panic::catch_unwind(|| media::load(&path, mode).map_err(|e| e.to_string())).unwrap_or_else(|_| Err("erreur interne lors du décodage".to_string()));
+            let r = std::panic::catch_unwind(|| media::load_with_progress(&path, mode, &progress).map_err(|e| e.to_string())).unwrap_or_else(|_| Err("erreur interne lors du décodage".to_string()));
             let _ = tx.send((id, path, play, r));
             ctx.request_repaint();
         });

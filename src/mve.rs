@@ -13,7 +13,7 @@ pub struct MveAudio {
     pub samples: Vec<i16>,
 }
 
-/// Une image : les modifications de palette, la carte de décodage (0x0F) et les données (0x11).
+/// Une étape de décodage : les modifications de palette, la carte de décodage (0x0F) et les données (0x11).
 #[derive(Default, Clone)]
 struct FrameRec {
     pal: Vec<PalOp>,
@@ -36,7 +36,8 @@ pub struct Mve {
     pub height: usize,
     /// Durée d'une image en microsecondes.
     pub frame_us: u32,
-    frames: Vec<FrameRec>,
+    /// Une image affichée (opcode 0x07) regroupe une ou plusieurs étapes de décodage.
+    frames: Vec<Vec<FrameRec>>,
     pub audio: Option<MveAudio>,
     /// Message si le fichier est tronqué ou contient une partie non gérée.
     pub warning: Option<String>,
@@ -81,6 +82,7 @@ impl Mve {
         let mut have_audio = false;
         let mut samples: Vec<i16> = Vec::new();
         let mut cur = FrameRec::default();
+        let mut steps: Vec<FrameRec> = Vec::new();
         let mut pred = [0i32; 2];
         'chunks: while pos + 4 <= d.len() {
             let clen = u16le(d, pos);
@@ -166,18 +168,40 @@ impl Mve {
                         }
                     }
                     0x0C | 0x0D if b.len() >= 4 => {
+                        // Certains fichiers (Sonora/Olympus) enchaînent plusieurs images vidéo avant l'opcode 0x07 :
+                        // toutes doivent être décodées (chacune dépend de la précédente), seule la dernière est affichée.
+                        if cur.data.1 > 0 {
+                            steps.push(std::mem::take(&mut cur));
+                        }
                         cur.pal.push(PalOp { start: u16le(b, 0), count: u16le(b, 2), off: body + 4, compressed: op == 0x0D });
                     }
-                    0x0F => cur.map = (body, bend - body),
-                    0x11 => cur.data = (body, bend - body),
+                    0x0F => {
+                        if cur.data.1 > 0 {
+                            steps.push(std::mem::take(&mut cur));
+                        }
+                        cur.map = (body, bend - body);
+                    }
+                    0x11 => {
+                        if cur.data.1 > 0 {
+                            steps.push(std::mem::take(&mut cur));
+                        }
+                        cur.data = (body, bend - body);
+                    }
                     0x07 => {
-                        m.frames.push(std::mem::take(&mut cur));
+                        steps.push(std::mem::take(&mut cur));
+                        m.frames.push(std::mem::take(&mut steps));
                     }
                     _ => {}
                 }
                 p = body + olen;
             }
             pos = end;
+        }
+        if cur.data.1 > 0 {
+            steps.push(cur);
+        }
+        if !steps.is_empty() {
+            m.frames.push(steps);
         }
         if m.width == 0 || m.height == 0 {
             bail!("MVE sans vidéo");
@@ -235,11 +259,17 @@ impl MveDecoder {
         let Some(f) = m.frames.get(self.next) else { return false };
         self.next += 1;
         let d = &m.data;
-        for op in &f.pal {
-            self.apply_pal(d, op);
+        let mut decoded = false;
+        for st in f {
+            for op in &st.pal {
+                self.apply_pal(d, op);
+            }
+            if st.data.1 >= 14 && st.map.1 > 0 {
+                self.decode_video(m, &d[st.map.0..st.map.0 + st.map.1], &d[st.data.0 + 14..st.data.0 + st.data.1]);
+                decoded = true;
+            }
         }
-        if f.data.1 > 14 && f.map.1 > 0 {
-            self.decode_video(m, &d[f.map.0..f.map.0 + f.map.1], &d[f.data.0 + 14..f.data.0 + f.data.1]);
+        if decoded {
             std::mem::swap(&mut self.cur, &mut self.prev);
             // Après l'échange, `prev` est la dernière image affichée et `cur` celle d'il y a deux images.
         }
